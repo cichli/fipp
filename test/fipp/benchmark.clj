@@ -1,26 +1,42 @@
 (ns fipp.benchmark
-  (:require [clojure.pprint]
+  (:require [fipp.clojure]
             [fipp.edn]
-            [fipp.clojure]
-            [criterium.core :refer [bench]]))
+            [clojure.pprint]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.random :as random]
+            [clojure.test.check.rose-tree :as rose]
+            [clojure.tools.reader.edn :as edn]
+            [criterium.core :refer [bench]])
+  (:import [java.io Writer]))
 
-(def benched-fns [
-  ;prn
-  fipp.edn/pprint
-  fipp.clojure/pprint
-  ;clojure.pprint/pprint
-])
+(set! *warn-on-reflection* true)
 
-(def samples {
-  :long (vec (range 10000))
-  ;; Dirty hacky source of test data:
-  :mixed (read-string {:read-cond :allow} (str "[" (slurp "src/fipp/engine.cljc") "]"))
-})
+(def benched-fns [prn
+                  fipp.edn/pprint
+                  fipp.clojure/pprint
+                  clojure.pprint/pprint])
+
+(def writer
+  (proxy [Writer] []
+    (write [_])
+    (flush [])
+    (close [])))
+
+(def ^:const seed 2144429765019375528)
+
+(defn samples-seq []
+  (map #(rose/root (gen/call-gen gen/any-printable %1 %2))
+       (gen/lazy-random-states (random/make-random seed))
+       (gen/make-size-range-seq 100)))
 
 ;; lein run -m fipp.benchmark
 (defn -main []
-  (doseq [f benched-fns
-          [k v] samples]
-    (println "Testing " f " on " k)
-    (criterium.core/with-progress-reporting
-      (bench (with-out-str (f v))))))
+  (let [samples (into [] (take 1000) (samples-seq))]
+    (doseq [f benched-fns]
+      (println "Benchmarking " f)
+      (time
+       (bench
+        (binding [*out* writer]
+          (doseq [sample samples]
+            (f sample)))))
+      (println))))
