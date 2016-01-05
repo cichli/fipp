@@ -4,67 +4,80 @@
   (:require [clojure.string :as s]
             [fipp.deque :as deque]))
 
-
-(defn unchunk [s]
-  (when (seq s)
-    (lazy-seq
-     (cons (first s)
-           (unchunk (next s))))))
-
 ;;; Serialize document into a stream
 
-(defmulti serialize-node first)
+(def flush-sentinel (Object.))
+(def sentinel (Object.))
 
-(defn serialize [doc]
-  (cond
-    (nil? doc) nil
-    (seq? doc) (mapcat serialize (unchunk doc))
-    (string? doc) [{:op :text, :text doc}]
-    (keyword? doc) (serialize-node [doc])
-    (vector? doc) (serialize-node doc)
-    :else (throw (ex-info "Unexpected class for doc node" {:node doc}))))
+(defn serialize
+  ([node] (serialize node '() '()))
+  ([node pending-children pending-output]
+   (lazy-seq
+    (cond
+      (nil? node) (serialize sentinel pending-children pending-output)
+      (seq? node) (serialize sentinel
+                             (cons node pending-children)
+                             (cons nil pending-output))
+      (string? node) (cons {:op :text, :text node}
+                           (serialize sentinel pending-children pending-output))
 
-;; Primitives
-;; See doc/primitives.md for details.
+      (keyword? node) (serialize [node] pending-children pending-output)
 
-(defmethod serialize-node :text [[_ & text]]
-  [{:op :text, :text (apply str text)}])
+      (vector? node) (let [[op & children] node]
+                       (case op
+                         :text (cons {:op :text, :text (apply str children)}
+                                     (serialize sentinel pending-children pending-output))
 
-(defmethod serialize-node :pass [[_ & text]]
-  [{:op :pass, :text (apply str text)}])
+                         :pass (cons {:op :pass, :text (apply str children)}
+                                     (serialize sentinel pending-children pending-output))
 
-(defmethod serialize-node :escaped [[_ text]]
-  (assert (string? text))
-  [{:op :escaped, :text text}])
+                         :escaped (do (assert (string? (second node)))
+                                      (cons {:op :escaped, :text (second node)}
+                                            (serialize sentinel pending-children pending-output)))
 
-(defmethod serialize-node :span [[_ & children]]
-  (serialize children))
+                         :span (serialize sentinel
+                                          (cons children pending-children)
+                                          (cons nil pending-output))
 
-(defmethod serialize-node :line [[_ inline]]
-  (let [inline (or inline " ")]
-    (assert (string? inline))
-    [{:op :line, :inline inline}]))
+                         :line (let [inline (or children " ")]
+                                 (assert (string? inline))
+                                 (cons {:op :line, :inline inline}
+                                       (serialize sentinel pending-children pending-output)))
 
-(defmethod serialize-node :break [& _]
-  [{:op :break}])
+                         :break (cons {:op :break}
+                                      (serialize sentinel pending-children pending-output))
 
-(defmethod serialize-node :group [[_ & children]]
-  (concat [{:op :begin}] (serialize children) [{:op :end}]))
+                         :group (cons {:op :begin}
+                                      (serialize sentinel
+                                                 (cons children pending-children)
+                                                 (cons {:op :end} pending-output)))
 
-(defmethod serialize-node :nest [[_ offset & children]]
-  (concat [{:op :nest, :offset offset}]
-          (serialize children)
-          [{:op :outdent}]))
+                         :nest (cons {:op :nest, :offset (first children)}
+                                     (serialize sentinel
+                                                (cons (rest children) pending-children)
+                                                (cons {:op :outdent} pending-output)))
 
-(defmethod serialize-node :align [[_ & args]]
-  (let [[offset & children] (if (number? (first args))
-                             args
-                             (cons 0 args))]
-    (concat [{:op :align, :offset offset}]
-            (serialize children)
-            [{:op :outdent}])))
+                         :align (let [[offset & children] (if (number? (first children))
+                                                            children
+                                                            (cons 0 children))]
+                                  (cons {:op :align, :offset offset}
+                                        (serialize sentinel
+                                                   (cons children pending-children)
+                                                   (cons {:op :outdent} pending-output))))))
 
+      (= sentinel node) (if-not (seq pending-children)
+                          (serialize flush-sentinel pending-children pending-output)
+                          (let [[children & pending-children] pending-children]
+                            (if (seq children)
+                              (serialize (first children)
+                                         (cons (rest children) pending-children)
+                                         pending-output)
+                              (serialize flush-sentinel pending-children pending-output))))
 
+      (= flush-sentinel node) (when (seq pending-output)
+                                (let [output (first pending-output)]
+                                  (cond->> (serialize sentinel pending-children (rest pending-output))
+                                    output (cons output))))))))
 
 (defn annotate-rights
   "A transducer which annotates the right-side of nodes assuming a
