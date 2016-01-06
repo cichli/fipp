@@ -12,72 +12,75 @@
 (defn serialize
   ([node] (serialize node '() '()))
   ([node pending-children pending-output]
-   (lazy-seq
-    (cond
-      (nil? node) (serialize sentinel pending-children pending-output)
-      (seq? node) (serialize sentinel
-                             (cons node pending-children)
-                             (cons nil pending-output))
-      (string? node) (cons {:op :text, :text node}
-                           (serialize sentinel pending-children pending-output))
+   (let [step (fn [node pending-children pending-output]
+                (cond
+                  (nil? node) (recur sentinel pending-children pending-output)
 
-      (keyword? node) (serialize [node] pending-children pending-output)
+                  (seq? node) (recur sentinel
+                                     (cons node pending-children)
+                                     (cons nil pending-output))
 
-      (vector? node) (let [[op & children] node]
-                       (case op
-                         :text (cons {:op :text, :text (apply str children)}
-                                     (serialize sentinel pending-children pending-output))
+                  (string? node) (cons {:op :text, :text node}
+                                       (serialize sentinel pending-children pending-output))
 
-                         :pass (cons {:op :pass, :text (apply str children)}
-                                     (serialize sentinel pending-children pending-output))
+                  (keyword? node) (recur [node] pending-children pending-output)
 
-                         :escaped (do (assert (string? (second node)))
-                                      (cons {:op :escaped, :text (second node)}
-                                            (serialize sentinel pending-children pending-output)))
+                  (vector? node) (let [[op & children] node]
+                                   (case op
+                                     :text (cons {:op :text, :text (apply str children)}
+                                                 (serialize sentinel pending-children pending-output))
 
-                         :span (serialize sentinel
-                                          (cons children pending-children)
-                                          (cons nil pending-output))
+                                     :pass (cons {:op :pass, :text (apply str children)}
+                                                 (serialize sentinel pending-children pending-output))
 
-                         :line (let [inline (or children " ")]
-                                 (assert (string? inline))
-                                 (cons {:op :line, :inline inline}
-                                       (serialize sentinel pending-children pending-output)))
+                                     :escaped (do (assert (string? (second node)))
+                                                  (cons {:op :escaped, :text (second node)}
+                                                        (serialize sentinel pending-children pending-output)))
 
-                         :break (cons {:op :break}
-                                      (serialize sentinel pending-children pending-output))
+                                     :span (recur sentinel
+                                                  (cons children pending-children)
+                                                  (cons nil pending-output))
 
-                         :group (cons {:op :begin}
-                                      (serialize sentinel
-                                                 (cons children pending-children)
-                                                 (cons {:op :end} pending-output)))
+                                     :line (let [inline (or children " ")]
+                                             (assert (string? inline))
+                                             (cons {:op :line, :inline inline}
+                                                   (serialize sentinel pending-children pending-output)))
 
-                         :nest (cons {:op :nest, :offset (first children)}
-                                     (serialize sentinel
-                                                (cons (rest children) pending-children)
-                                                (cons {:op :outdent} pending-output)))
+                                     :break (cons {:op :break}
+                                                  (serialize sentinel pending-children pending-output))
 
-                         :align (let [[offset & children] (if (number? (first children))
-                                                            children
-                                                            (cons 0 children))]
-                                  (cons {:op :align, :offset offset}
-                                        (serialize sentinel
-                                                   (cons children pending-children)
-                                                   (cons {:op :outdent} pending-output))))))
+                                     :group (cons {:op :begin}
+                                                  (serialize sentinel
+                                                             (cons children pending-children)
+                                                             (cons {:op :end} pending-output)))
 
-      (= sentinel node) (if-not (seq pending-children)
-                          (serialize flush-sentinel pending-children pending-output)
-                          (let [[children & pending-children] pending-children]
-                            (if (seq children)
-                              (serialize (first children)
-                                         (cons (rest children) pending-children)
-                                         pending-output)
-                              (serialize flush-sentinel pending-children pending-output))))
+                                     :nest (cons {:op :nest, :offset (first children)}
+                                                 (serialize sentinel
+                                                            (cons (rest children) pending-children)
+                                                            (cons {:op :outdent} pending-output)))
 
-      (= flush-sentinel node) (when (seq pending-output)
-                                (let [output (first pending-output)]
-                                  (cond->> (serialize sentinel pending-children (rest pending-output))
-                                    output (cons output))))))))
+                                     :align (let [[offset & children] (if (number? (first children))
+                                                                        children
+                                                                        (cons 0 children))]
+                                              (cons {:op :align, :offset offset}
+                                                    (serialize sentinel
+                                                               (cons children pending-children)
+                                                               (cons {:op :outdent} pending-output))))))
+
+                  (= sentinel node) (if-not (seq pending-children)
+                                      (recur flush-sentinel pending-children pending-output)
+                                      (let [[children & pending-children] pending-children]
+                                        (if (seq children)
+                                          (recur (first children)
+                                                 (cons (rest children) pending-children)
+                                                 pending-output)
+                                          (recur flush-sentinel pending-children pending-output))))
+
+                  (= flush-sentinel node) (when (seq pending-output)
+                                            (let [output (first pending-output)]
+                                              (cond->> (serialize sentinel pending-children (rest pending-output))
+                                                output (cons output))))))]
+     (lazy-seq (step node pending-children pending-output)))))
 
 (defn annotate-rights
   "A transducer which annotates the right-side of nodes assuming a
@@ -172,7 +175,7 @@
                        (do
                          (vreset! pos (:position (first buffers**)))
                          (recur buffers** res*))))))
-            ))))))))
+               ))))))))
 
 
 (defn format-nodes
@@ -191,56 +194,56 @@
          (let [indent (peek @tab-stops)]
            (case op
              :text
-               (let [text (:text node)
-                     res* (if (zero? @column)
-                            (do (vswap! column + indent)
-                                (rf res (apply str (repeat indent \space))))
-                            res)]
-                 (vswap! column + (count text))
-                 (rf res* text))
+             (let [text (:text node)
+                   res* (if (zero? @column)
+                          (do (vswap! column + indent)
+                              (rf res (apply str (repeat indent \space))))
+                          res)]
+               (vswap! column + (count text))
+               (rf res* text))
              :escaped
-               (let [text (:text node)
-                     res* (if (zero? @column)
-                            (do (vswap! column + indent)
-                                (rf res (apply str (repeat indent \space))))
-                            res)]
-                 (vswap! column inc)
-                 (rf res* text))
+             (let [text (:text node)
+                   res* (if (zero? @column)
+                          (do (vswap! column + indent)
+                              (rf res (apply str (repeat indent \space))))
+                          res)]
+               (vswap! column inc)
+               (rf res* text))
              :pass
-               (rf res (:text node))
+             (rf res (:text node))
              :line
-               (if (zero? @fits)
-                 (do
-                   (vreset! length (- (+ right width) indent))
-                   (vreset! column 0)
-                   (rf res "\n"))
-                 (let [inline (:inline node)]
-                   (vswap! column + (count inline))
-                   (rf res inline)))
-             :break
+             (if (zero? @fits)
                (do
                  (vreset! length (- (+ right width) indent))
                  (vreset! column 0)
                  (rf res "\n"))
+               (let [inline (:inline node)]
+                 (vswap! column + (count inline))
+                 (rf res inline)))
+             :break
+             (do
+               (vreset! length (- (+ right width) indent))
+               (vreset! column 0)
+               (rf res "\n"))
              :nest
-               (do (vswap! tab-stops conj (+ indent (:offset node)))
-                   res)
+             (do (vswap! tab-stops conj (+ indent (:offset node)))
+                 res)
              :align
-               (do (vswap! tab-stops conj (+ @column (:offset node)))
-                   res)
+             (do (vswap! tab-stops conj (+ @column (:offset node)))
+                 res)
              :outdent
-               (do (vswap! tab-stops pop)
-                   res)
+             (do (vswap! tab-stops pop)
+                 res)
              :begin
-               (do (vreset! fits (cond
-                                   (pos? @fits) (inc @fits)
-                                   (= right :too-far) 0
-                                   (<= right @length) 1
-                                   :else 0))
-                   res)
+             (do (vreset! fits (cond
+                                 (pos? @fits) (inc @fits)
+                                 (= right :too-far) 0
+                                 (<= right @length) 1
+                                 :else 0))
+                 res)
              :end
-               (do (vreset! fits (max 0 (dec @fits)))
-                   res)
+             (do (vreset! fits (max 0 (dec @fits)))
+                 res)
              (throw (ex-info "Unexpected node op" {:node node}))))
          )))))
 
@@ -279,53 +282,53 @@
     (->> doc3
          serialize
          (into [] (comp
-                    annotate-rights
-                    (annotate-begins options)
-                    (format-nodes options)
-                    ))
-         ;(run! print)
+                   annotate-rights
+                   (annotate-begins options)
+                   (format-nodes options)
+                   ))
+                                        ;(run! print)
          clojure.pprint/pprint
          )
-    ;nil
+                                        ;nil
     )
 
   ;; test of :pass op
   (do
     (pprint-document
-      [:group "AB" :line "B" :line "C"]
-      {:width 6}) 
+     [:group "AB" :line "B" :line "C"]
+     {:width 6}) 
     (println "--")
     (pprint-document
-      [:group "<AB>" :line "B" :line "C"]
-      {:width 6}) 
+     [:group "<AB>" :line "B" :line "C"]
+     {:width 6}) 
     (println "--")
     (pprint-document
-      [:group [:pass "<"] "AB" [:pass ">"] :line "B" :line "C"]
-      {:width 6}))
+     [:group [:pass "<"] "AB" [:pass ">"] :line "B" :line "C"]
+     {:width 6}))
 
   (def ex1
     [:group "["
-        [:nest 2
-            [:line ""] "0,"
-            :line "1,"
-            :line "2,"
-            :line "3"
-            [:line ""]]
-        "]"])
+     [:nest 2
+      [:line ""] "0,"
+      :line "1,"
+      :line "2,"
+      :line "3"
+      [:line ""]]
+     "]"])
 
   (pprint-document ex1 {:width 20})
   (pprint-document ex1 {:width 6})
 
   (def ex2
     [:span "["
-        [:align
-            [:group [:line ""]] "0,"
-            [:group :line] "1,"
-            [:group :line] "2,"
-            [:group :line] "3"]
-        "]"])
+     [:align
+      [:group [:line ""]] "0,"
+      [:group :line] "1,"
+      [:group :line] "2,"
+      [:group :line] "3"]
+     "]"])
 
   (pprint-document ex2 {:width 20})
   (pprint-document ex2 {:width 6})
 
-)
+  )
